@@ -1,60 +1,25 @@
-require "tmpdir"
-require "open3"
-require "bundler"
+require 'erubis'
 
 class RailsificationsController < MVCLI::Controller
   requires :compute
   requires :naming
   requires :command
+  requires :chefsolo
 
   def create
     command.output.puts "Setting up a chef kitchen in order to railsify your server."
     command.output.puts "This could take a while...."
     sleep(1)
-    tmpdir = Pathname(Dir.tmpdir).join 'chef_kitchen'
-    FileUtils.mkdir_p tmpdir
-    Dir.chdir tmpdir do
-      Bundler.with_clean_env do
-        File.open('Gemfile', 'w') do |f|
-          f.puts 'source "https://rubygems.org"'
-          f.puts 'gem "knife-solo", ">= 0.3.0pre3"'
-          f.puts 'gem "berkshelf"'
-        end
-        execute "bundle install --binstubs"
-        execute "bin/knife solo init ."
-        File.open 'Berksfile', 'w' do |f|
-          f.puts "site :opscode"
-          f.puts ""
-          f.puts "cookbook 'runit', '>= 1.1.2'"
-          f.puts "cookbook 'rackbox', github: 'hayesmp/rackbox-cookbook'"
-        end
-        execute "bin/berks install --path cookbooks/"
-        execute "bin/knife solo prepare root@#{server.ipv4_address}"
-        File.open('nodes/host.json', 'w') do |f|
-          f.puts('{"run_list":["rackbox"],"rackbox":{"apps":{"unicorn":[{"appname":"app1","hostname":"app1"}]},"ruby":{"global_version":"2.0.0-p195","versions":["2.0.0-p195"]}}}')
-        end
-
-        FileUtils.rm_rf "#{server.ipv4_address}.json"
-        FileUtils.mv "nodes/host.json", "nodes/#{server.ipv4_address}.json"
-
-        execute "bin/knife solo cook root@#{server.ipv4_address}"
-      end
-    end
-    return server
+    chef_server = chefsolo.pipeline(server, [{:name=>"rackbox", :repo=>"hayesmp/rackbox-cookbook"}], load_runlist)
+    return chef_server
   end
 
   private
 
-  def execute(cmd)
-    Open3.popen3(cmd) do |stdin, stdout, stderr, wait_thr|
-      while line = stdout.gets
-        command.output.puts "   " + line
-      end
-      exit_status = wait_thr.value
-      unless exit_status.success?
-        abort "FAILED !!! #{cmd}"
-      end
-    end
+  def load_runlist
+    run_list = File.read(File.join(File.dirname(File.expand_path(__FILE__)), "../views/railsifications/run_list.json.erb"))
+    run_list = Erubis::Eruby.new(run_list)
+    run_list.result()
   end
 
   def server
